@@ -2,14 +2,14 @@
 // Copyright (c) 2018-2020 Coinbase, Inc. <https://www.coinbase.com/>
 // Licensed under the Apache License, version 2.0
 
-import { WalletLinkProvider } from "./provider/WalletLinkProvider"
-import { WalletLinkRelay } from "./relay/WalletLinkRelay"
-import { getFavicon } from "./util"
-import { WalletLinkUI, WalletLinkUIOptions } from "./provider/WalletLinkUI"
-import { WalletLinkSdkUI } from "./provider/WalletLinkSdkUI"
 import url from "url"
 import { ScopedLocalStorage } from "./lib/ScopedLocalStorage"
+import { WalletLinkProvider } from "./provider/WalletLinkProvider"
+import { WalletLinkSdkUI } from "./provider/WalletLinkSdkUI"
+import { WalletLinkUI, WalletLinkUIOptions } from "./provider/WalletLinkUI"
+import { WalletLinkRelay } from "./relay/WalletLinkRelay"
 import { WalletLinkRelayEventManager } from "./relay/WalletLinkRelayEventManager"
+import { getFavicon } from "./util"
 
 const WALLETLINK_URL =
   process.env.WALLETLINK_URL! || "https://www.walletlink.org"
@@ -74,7 +74,7 @@ export class WalletLink {
     const walletLinkOrigin = `${u.protocol}//${u.host}`
     this._storage = new ScopedLocalStorage(`-walletlink:${walletLinkOrigin}`)
 
-    this._storage.setItem("version", WalletLink.VERSION);
+    this._storage.setItem("version", WalletLink.VERSION)
 
     if (typeof window.walletLinkExtension !== "undefined") {
       return
@@ -96,17 +96,24 @@ export class WalletLink {
 
   /**
    * Create a Web3 Provider object
-   * @param jsonRpcUrl Ethereum JSON RPC URL
+   * @param jsonRpcUrl Ethereum JSON RPC URL (Default: "")
    * @param chainId Ethereum Chain ID (Default: 1)
    * @returns A Web3 Provider
    */
   public makeWeb3Provider(
-    jsonRpcUrl: string,
+    jsonRpcUrl: string = "",
     chainId: number = 1
   ): WalletLinkProvider {
     if (typeof window.walletLinkExtension !== "undefined") {
-      //@ts-ignore
-      window.walletLinkExtension.setProviderInfo(jsonRpcUrl, chainId)
+      if (
+        //@ts-ignore
+        typeof window.walletLinkExtension.isCipher !== "boolean" ||
+        //@ts-ignore
+        !window.walletLinkExtension.isCipher
+      ) {
+        //@ts-ignore
+        window.walletLinkExtension.setProviderInfo(jsonRpcUrl, chainId)
+      }
 
       return window.walletLinkExtension
     }
@@ -115,6 +122,8 @@ export class WalletLink {
     if (!relay || !this._relayEventManager || !this._storage) {
       throw new Error("Relay not initialized, should never happen")
     }
+
+    if (!jsonRpcUrl) relay.setConnectDisabled(true)
 
     return new WalletLinkProvider({
       relayProvider: () => Promise.resolve(relay),
@@ -139,8 +148,15 @@ export class WalletLink {
     this._appLogoUrl = appLogoUrl || getFavicon()
 
     if (typeof window.walletLinkExtension !== "undefined") {
-      //@ts-ignore
-      window.walletLinkExtension.setAppInfo(this._appName, this._appLogoUrl)
+      if (
+        //@ts-ignore
+        typeof window.walletLinkExtension.isCipher !== "boolean" ||
+        //@ts-ignore
+        !window.walletLinkExtension.isCipher
+      ) {
+        //@ts-ignore
+        window.walletLinkExtension.setAppInfo(this._appName, this._appLogoUrl)
+      }
     } else {
       this._relay?.setAppInfo(this._appName, this._appLogoUrl)
     }

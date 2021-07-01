@@ -14,18 +14,14 @@ import {
   ensureHexString,
   ensureIntNumber,
   ensureRegExpString,
-  prepend0x
+  prepend0x,
+  hexStringFromIntNumber
 } from "../util"
 import eip712 from "../vendor-js/eth-eip712-util"
 import { FilterPolyfill } from "./FilterPolyfill"
 import { JSONRPCMethod, JSONRPCRequest, JSONRPCResponse } from "./JSONRPC"
-import {
-  ProviderError,
-  ProviderErrorCode,
-  Web3Provider,
-  RequestArguments
-} from "./Web3Provider"
-import { ethErrors } from "eth-rpc-errors"
+import { Web3Provider, RequestArguments } from "./Web3Provider"
+import { ethErrors, serializeError } from "eth-rpc-errors"
 import SafeEventEmitter from "@metamask/safe-event-emitter"
 import {
   SubscriptionManager,
@@ -64,12 +60,25 @@ export class WalletLinkProvider
 
   private _addresses: AddressString[] = []
 
+  private hasMadeFirstChainChangedEmission = false
+  // true if mobile client has sent message to override jsonRpcUrl+chainId
+  private isChainOverridden = false
+
   constructor(options: Readonly<WalletLinkProviderOptions>) {
     super()
 
-    if (!options.jsonRpcUrl) {
-      throw new Error("jsonRpcUrl must be provided")
-    }
+    this.setProviderInfo = this.setProviderInfo.bind(this)
+    this.updateProviderInfo = this.updateProviderInfo.bind(this)
+    this.setAppInfo = this.setAppInfo.bind(this)
+    this.enable = this.enable.bind(this)
+    this.close = this.close.bind(this)
+    this.send = this.send.bind(this)
+    this.sendAsync = this.sendAsync.bind(this)
+    this.request = this.request.bind(this)
+    this._setAddresses = this._setAddresses.bind(this)
+    this.scanQRCode = this.scanQRCode.bind(this)
+    this.arbitraryRequest = this.arbitraryRequest.bind(this)
+    this.childRequestEthereumAccounts = this.childRequestEthereumAccounts.bind(this)
 
     this._chainId = ensureIntNumber(options.chainId || 1)
     this._jsonRpcUrl = options.jsonRpcUrl
@@ -144,9 +153,20 @@ export class WalletLinkProvider
   }
 
   public setProviderInfo(jsonRpcUrl: string, chainId: number) {
-    this._jsonRpcUrl = jsonRpcUrl
+    if (this.isChainOverridden) return
+    this.updateProviderInfo(jsonRpcUrl, chainId, false)
+  }
+
+  private updateProviderInfo(jsonRpcUrl: string, chainId: number, fromRelay: boolean) {
+    if (fromRelay) this.isChainOverridden = true
+    const originalChainId = this._chainId
     this._chainId = ensureIntNumber(chainId)
-    this.emit("chainChanged", this._chainId)
+    const chainChanged = this._chainId !== originalChainId
+    this._jsonRpcUrl = jsonRpcUrl
+    if (chainChanged || !this.hasMadeFirstChainChangedEmission) {
+      this.emit("chainChanged", this._chainId)
+      this.hasMadeFirstChainChangedEmission = true
+    }
   }
 
   public setAppInfo(appName: string, appLogoUrl: string | null): void {
@@ -448,6 +468,9 @@ export class WalletLinkProvider
       case JSONRPCMethod.net_version:
         return this._net_version()
 
+      case JSONRPCMethod.eth_chainId:
+        return this._eth_chainId()
+
       default:
         return undefined
     }
@@ -501,6 +524,7 @@ export class WalletLinkProvider
         return this._walletlink_arbitrary(params)
     }
 
+    if (!this._jsonRpcUrl) throw Error("Error: No jsonRpcUrl provided")
     return window
       .fetch(this._jsonRpcUrl, {
         method: "POST",
@@ -511,17 +535,13 @@ export class WalletLinkProvider
       .then(res => res.json())
       .then(json => {
         if (!json) {
-          throw new ProviderError("unexpected response")
+          throw ethErrors.rpc.parse({})
         }
         const response = json as JSONRPCResponse
         const { error } = response
 
         if (error) {
-          throw new ProviderError(
-            error.message || "RPC Error",
-            error.code,
-            error.data
-          )
+          throw serializeError(error)
         }
 
         return response
@@ -620,15 +640,12 @@ export class WalletLinkProvider
 
   private _requireAuthorization(): void {
     if (this._addresses.length === 0) {
-      throw new ProviderError("Unauthorized", ProviderErrorCode.UNAUTHORIZED)
+      throw ethErrors.provider.unauthorized({})
     }
   }
 
   private _throwUnsupportedMethodError(): Promise<JSONRPCResponse> {
-    throw new ProviderError(
-      "Unsupported method",
-      ProviderErrorCode.UNSUPPORTED_METHOD
-    )
+    throw ethErrors.provider.unsupportedMethod({})
   }
 
   private async _signEthereumMessage(
@@ -653,9 +670,8 @@ export class WalletLinkProvider
         typeof err.message === "string" &&
         err.message.match(/(denied|rejected)/i)
       ) {
-        throw new ProviderError(
-          "User denied message signature",
-          ProviderErrorCode.USER_DENIED_REQUEST_SIGNATURE
+        throw ethErrors.provider.userRejectedRequest(
+          "User denied message signature"
         )
       }
       throw err
@@ -688,6 +704,10 @@ export class WalletLinkProvider
     return this._chainId.toString(10)
   }
 
+  private _eth_chainId(): string {
+    return hexStringFromIntNumber(this._chainId)
+  }
+
   private async _eth_requestAccounts(): Promise<JSONRPCResponse> {
     if (this._addresses.length > 0) {
       return Promise.resolve({
@@ -706,9 +726,8 @@ export class WalletLinkProvider
         typeof err.message === "string" &&
         err.message.match(/(denied|rejected)/i)
       ) {
-        throw new ProviderError(
-          "User denied account authorization",
-          ProviderErrorCode.USER_DENIED_REQUEST_ACCOUNTS
+        throw ethErrors.provider.userRejectedRequest(
+          "User denied account authorization"
         )
       }
       throw err
@@ -765,9 +784,8 @@ export class WalletLinkProvider
         typeof err.message === "string" &&
         err.message.match(/(denied|rejected)/i)
       ) {
-        throw new ProviderError(
-          "User denied transaction signature",
-          ProviderErrorCode.USER_DENIED_REQUEST_SIGNATURE
+        throw ethErrors.provider.userRejectedRequest(
+          "User denied transaction signature"
         )
       }
       throw err
@@ -800,9 +818,8 @@ export class WalletLinkProvider
         typeof err.message === "string" &&
         err.message.match(/(denied|rejected)/i)
       ) {
-        throw new ProviderError(
-          "User denied transaction signature",
-          ProviderErrorCode.USER_DENIED_REQUEST_SIGNATURE
+        throw ethErrors.provider.userRejectedRequest(
+          "User denied transaction signature"
         )
       }
       throw err
@@ -903,6 +920,12 @@ export class WalletLinkProvider
     }
 
     return this._relayProvider().then(relay => {
+      relay.setChainIdCallback((chainId) => {
+        this.updateProviderInfo(this._jsonRpcUrl, parseInt(chainId, 10), true)
+      })
+      relay.setJsonRpcUrlCallback((jsonRpcUrl) => {
+        this.updateProviderInfo(jsonRpcUrl, this._chainId, true)
+      })
       this._relay = relay
       return relay
     })
